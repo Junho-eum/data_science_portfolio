@@ -1,0 +1,352 @@
+---
+title: "Different League Same Sports?"
+output: pdf_document
+date: "2023-03-06"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(Matrix)
+library(glmnet)
+library(dplyr)
+```
+
+Data collected from
+https://www.kaggle.com/datasets/mattop/korean-baseball-pitching-data-1982-2021
+https://www.kaggle.com/datasets/mattop/baseball-kbo-batting-data-1982-2021
+Description of the dataset can be found at the end of the document or on the link.
+
+## Beat Pythagorean Expectation Model
+KBO league and Major League Baseball have different tactics and play styles. Due to physicality and lack of sports technology, Korean baseball has evolved into a more running and tactical style and is often referred to as "Small-Ball." However, the Major League is more prone to home runs, often called "Big-Ball."
+I am introducing the statistic used in Major League Baseball, which is now considered a standard matrix to compute the expected win rate. This statistic was made by Bill James and is called Pythagorean Expectation.
+He stated that the Expected win rate could be computed by dividing the sum of the squared values of runs scored and runs allowed from the squared value of runs scored.
+The equation looks like this.
+
+Pythagorean Expectation=(RS^2)/(RS^2+RA^2)
+
+I wanted to test if this equation also works for teams in the KBO league. 
+
+Since there is a considerable difference in play styles in each league, I wanted to find the best model to predict the win_loss_percentage and then compare the accuracy with the Pythagorean Expectation model.
+
+## Data Visualization
+
+First, after importing two datasets, I tried to find the null values in each column.
+It shows that some data points from the past are missing because the stat recording system was not implemented yet.
+Therefore I removed the duplicates and dropped rows with null values.
+
+Next, I generated a correlation heatmap to see which variable affects the win-loss percentage most.
+```{r cars 56}
+df1=read.csv("kbopitchingdata.csv")
+df2 = read.csv("kbobattingdata.csv")
+train_df <- data.frame()
+train_df = merge(df1, df2, by = c("team","year"))
+train_df <- distinct(train_df)
+train_df <- train_df[, colSums(is.na(train_df)) == 0]
+```
+
+```{r cars}
+library(ggcorrplot)
+
+corr=cor(train_df[,4:ncol(train_df)], use = "pairwise.complete.obs")
+
+ggplot(data = reshape2::melt(corr)) + 
+  geom_tile(aes(Var1, Var2, fill = value)) +
+  scale_fill_gradient2(low = "#ffffff", mid = "#7fcdbb", high = "#081d58", midpoint = 0, space = "Lab", 
+                       na.value = "grey50", guide = "colourbar", limits = c(-1,1), name = "") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1,size=5), axis.text.y = element_text(angle = 0, hjust = 1,size=5), 
+        panel.grid.major = element_blank(), panel.border = element_blank(), panel.background = element_blank(), 
+        axis.line = element_blank(), axis.title = element_blank(), axis.ticks = element_blank()) +
+  coord_fixed()
+```
+
+After observing the complete pairwise correlation heatmap, I specified the heatmap to a correlation with win-loss percentage vs. other variables. 
+The plot shows that wins, saves,strike_walk, shutouts, and saves have the highest correlation absolute value with the win_loss_percentage.
+Pythagorean Expectation uses only runs_scores and runs_allowed parameters to predict the win_loss_percentage. So I will use these variables except 'win' because it has high collinearity with the win_loss percentage for multiple logistic regression to build a model to predict win_loss_percentage to see the difference in accuracy between these two models.
+
+```{r cars2}
+corr=cor(train_df["win_loss_percentage"],train_df[,4:ncol(train_df)], use = "pairwise.complete.obs")
+
+top_5 <- sort(abs(corr), decreasing = TRUE)[2:6]
+top_5
+
+ggplot(data = reshape2::melt(corr)) + 
+  geom_tile(aes(Var1, Var2, fill = value)) +
+  scale_fill_gradient2(low = "#ffffff", mid = "#7fcdbb", high = "#081d58", midpoint = 0, space = "Lab", 
+                       na.value = "grey50", guide = "colourbar", limits = c(-1,1), name = "") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1,size=5), axis.text.y = element_text(angle = 0, hjust = 1,size=5), 
+        panel.grid.major = element_blank(), panel.border = element_blank(), panel.background = element_blank(), 
+        axis.line = element_blank(), axis.title = element_blank(), axis.ticks = element_blank()) +
+  coord_fixed()
+```
+
+```{r cars 49}
+df1=read.csv("kbopitchingdata.csv")
+df2 = read.csv("kbobattingdata.csv")
+
+merged_df = merge(df1, df2, by = c("team","year"))
+merged_df <- distinct(merged_df)
+merged_df <- merged_df[, colSums(is.na(merged_df)) == 0]
+```
+
+# Logistic regression with "age" as parameter
+
+After checking for high correlation parameters, I wanted to see how the average age of a team could contribute to the win_loss_percentage and the impact of an aging curve. 
+First, I created a dummy variable with a quartile range of by age<=25.7: 0, 25.7<age<=26.9: 1, age>28: 2.
+Setting the age0 group as a reference dummy variable, I built a linear model and ran an ANOVA analysis.
+The result showed that the group age 2, which consists of age >28 is significant on alpha level 0.01.
+
+```{r cars 55}
+avg_age = mean(merged_df$average_age)
+quantile(merged_df$average_age, probs = c(0.25, 0.5, 0.75))
+merged_df$age0 <- ifelse(merged_df$average_age<=25.7, 1, 0)
+merged_df$age1 <- ifelse(merged_df$average_age>25.7 && merged_df$average_age<=26.9, 1, 0)
+merged_df$age2 <-ifelse(merged_df$average_age>28, 1, 0)
+
+model <- lm(win_loss_percentage ~ age1 + age2, data=merged_df)
+summary(model)
+anova(model)
+```
+Plotting the trend between win loss percentage vs average age.
+```{r cars 54}
+ggplot(data = train_df, aes(x = average_age, y = win_loss_percentage)) +
+  geom_point() +
+  geom_smooth(method = "loess", se = TRUE)+
+  labs(x = "Average Age", y = "Win-Loss Percentage")
+```
+
+# Multinomial Logistic Regression Model
+
+To build a multinomial logistic regression classification model using saves,strike_walk, and shutouts as parameters,
+I built multinomial logistic regression model using  to compare it with the Pythagorean Expectation
+
+```{r cars8}
+df1=read.csv("kbopitchingdata.csv")
+df2 = read.csv("kbobattingdata.csv")
+# Merging another dataframe containing batter data
+merged_df = merge(df1, df2, by = c("team","year"))
+merged_df <- distinct(merged_df)
+merged_df <- merged_df[, colSums(is.na(merged_df)) == 0]
+```
+
+Then, divide the win-loss percentage into three levels <0.45(bad), <0.55 (standard), >0.63 (good), and set the normal state as a reference variable.
+Then I factored in the dependent variable and built a multinomial logistic regression model focusing on standard errors from the summary of the model. The standard error of average age is lower than the other variables, so the average age is a relatively accurate model parameter.
+Moreover, the confusion matrix for the model using predicted values from the model gives only 0.54 accuracy, so this model is not a good fit for the data.
+Lastly, I conducted a z-test to check the significance of each parameter for this model.
+
+The accuracy of the model is 0.467, which is not accurate. Since the classification model was not accurate, I will try the regression model.
+```{r cars100}
+library(nnet)
+#factor the win_loss_percentage into 3 levels: <0.45:0 (bad), <0.55 (normal), >0.63 (good)
+# Creating function to generate the levels
+create_level <- function(x) {
+  ifelse(x < 0.45, "bad", ifelse(x < 0.55, "normal", "good"))
+}
+
+train_df <- train_df %>%
+  mutate(response = create_level(win_loss_percentage))
+# Create new variable for factors
+train_df$responseF=factor(train_df$response)
+
+# Identify a reference level
+# normal as a reference level
+train_df$out = relevel(train_df$responseF, ref="normal")
+# Build multinomial logistic regression model
+
+my_model = multinom(out~shutouts+saves+strikeout_walk,data=train_df)
+summary(my_model)
+
+#Predicting classes
+head(predict(my_model,train_df))
+
+#Predicting probabilities
+head(predict(my_model,train_df,type='prob'))
+
+# Misclassification error
+cm = table(predict(my_model,train_df),train_df$out)
+cm
+
+#Calculating misclassifcation percentage
+1-sum(diag(cm))/sum(cm)
+
+#two-tailed z test
+z=summary(my_model)$coefficients/summary(my_model)$standard.errors
+p=(1-pnorm(abs(z),0,1))*2
+1-p
+```
+
+Classification model did not perform well. I will try regression modeling
+2. Split the dataset into 0.3/0.7
+```{r cars9}
+set.seed(123)
+train_indices <- sample(1:nrow(merged_df), round(0.7 * nrow(merged_df)), replace = FALSE)
+train_data <- merged_df[train_indices, ]
+test_data <- merged_df[-train_indices, ]
+```
+
+# Lasso Regression for variable selection
+
+In Lasso regression, the coefficients of the variables are shrunk toward zero.
+The larger the variable's coefficient, the more influential the variable is for predicting the outcome variable. I picked the top4 variables that have the highest coefficients using lasso regression.
+
+After selecting all numerical variables, Regression was performed with 10-fold cross-validation.
+
+Then, I plotted the regression model, which shows the mean cross-validated error as a function of the log of lambda.
+I adjusted the lambda value to the minimum lambda value that the model gives.
+Then performed Lasso regression again with the optimal lambda value.
+
+Variables with the highest coefficient were batting_average WHIP OBP runs_per_game.x.
+
+
+```{r pressure, echo=FALSE}
+library(glmnet)
+
+# Select the predictor variables and response variable in the training and test data sets
+train_df <- train_data[,4:ncol(train_data)]
+test_df <- test_data[,4:ncol(test_data)]
+
+# Fit Lasso regression with cross-validation
+cv_lasso <- cv.glmnet(as.matrix(train_df %>% select(-win_loss_percentage)), 
+                      train_df$win_loss_percentage,
+                      alpha = 1, # Lasso regression
+                      nfolds = 10, # 10-fold cross-validation
+                      type.measure = "mse", # Mean squared error as the performance metric
+                      standardize = TRUE) # Standardize the predictors
+
+# Plot the cross-validation results
+plot(cv_lasso)
+
+# Identify the optimal value of lambda that gives the best performance
+best_lambda <- cv_lasso$lambda.min
+cat("The optimal lambda is", best_lambda, "\n")
+
+# Fit Lasso regression with the optimal lambda
+lasso_model <- glmnet(as.matrix(train_df %>% select(-win_loss_percentage)), 
+                      train_df$win_loss_percentage,
+                      alpha = 1, 
+                      lambda = best_lambda, # Optimal lambda
+                      standardize = TRUE) # Standardize the predictors
+
+# Extract the coefficients and order them by their absolute values
+lasso_coef <- coef(lasso_model)
+
+ordered_coef <- lasso_coef[order(abs(lasso_coef[,1]), decreasing = TRUE),]
+
+# Select the top 4 variables
+selected_vars <- names(ordered_coef)[2:5]
+cat("The selected variables are", selected_vars, "\n")
+```
+
+# Ridge Regression Modeling
+
+Now I will use the ridge regression to shrink the coefficients of the top 4 variables selected from lasso regression.
+
+For the model parameter, I added runs_scored and runs_allowed to compare two models later.
+
+The ridge regression model resulted in mse=0.0024, r_squared =0.79.
+
+The mean squared error (MSE) value of 0.0024 means that, on average, the predicted win_loss_percentage of the ridge regression model differs from the actual win_loss_percentage by 0.0024 units. 
+
+The R-squared value of 0.79 indicates that the ridge regression model explains about 79% of the variation in the outcome variable. 
+
+The results suggest that the ridge regression model is a good predictor for the KBO dataset.
+
+```{r cars10}
+# Ridge regression
+library(glmnet)
+# Prepare the data for modeling
+x <- as.matrix(train_data[,c("batting_average", "WHIP", "OBP", "runs_per_game.x")])
+y <- train_data$win_loss_percentage
+
+# Fit the ridge regression model using glmnet
+ridge_model <- glmnet(x, y, alpha = 0, lambda = 0.1)
+
+# Predict using the ridge regression model on the test data
+x_test <- as.matrix(test_data[,c("batting_average", "WHIP", "OBP", "runs_per_game.x")])
+y_pred <- predict(ridge_model, newx = x_test)
+
+# Evaluate the model's performance on the test data
+mse <- mean((y_pred - test_data$win_loss_percentage)^2)
+rsq <- cor(y_pred, test_data$win_loss_percentage)^2
+
+mse
+rsq
+```
+
+# Pythagorean Expectation Modeling
+Next, I build a multi-polynomial regression model using the Pythagorean Expectation.
+The summary of the model gives an adjusted R squared value of 0.68, which is lower than the R squared value from the ridge regression, and it means that the ridge regression model fits the data better.
+Moreover, the model gave a mean squared error of 0.0023, which is almost the same as the mse from the ridge regression model.
+Two models gave similar accuracy, but since ridge regression fits the data better, I can conclude that my model built from lasso and ridge regression is better than the quadratic model built from the Pythagorean Expectation.
+
+```{r cars22}
+Pyth_exp = win_loss_percentage~ poly(runs.y,2)/(poly(runs.x,2)+poly(runs.y,2))
+pyth_model = lm(Pyth_exp,data=train_data)
+
+predicted_y <- predict(pyth_model, newdata = test_data)
+# Calculate the MSE between predicted and actual response values
+mse <- mean((test_data$win_loss_percentage - predicted_y)^2)
+mse
+summary(pyth_model)
+```
+
+
+The dataset is consisted of 51 columns and the following is the description of each column
+
+ team
+ year
+ id
+ average_age: Average pitcher age
+ runs_per_game.x: Runs scored per game
+ wins
+ losses
+ win_loss_percentage: win/loss
+ ERA: Pitching ERA
+ run_average_9: runs allowed per 9 innings
+ games.x: games played with the pitcher
+ complete_game
+ shutouts: No runs allowed and complete games
+ saves: saves made by the pitcher
+ innings_pitched
+ hits.x:hits allowed
+ runs.x:runs allowed
+ earned_runs:earned runs allowed
+ home_runs
+ walks:walks allowed
+ strikeouts.xpitcher strikeouts
+ hit_batter
+ batters_faced
+ WHIP: (Walks + Hits) / Total Innings Pitched
+ hits_9: Hits per 9 innings
+ homeruns_9: Homeruns per 9 innings
+ walks_9: walks per 9 innings
+ strikeouts_9: strikeouts per 9 innings
+ strikeout_walk: strikeout/walk ratio
+ average_batter_age
+ runs_per_game.y: runs scored per game
+ games.y: games played with the batter
+ plate_appearances: Times batter appeared on plate
+ at_bats
+ runs.y: runs scored by batter
+ hits.y: hits made by batter
+ doubles
+ triples
+ homeruns
+ RBI:Runs batted in
+ bases_on_balls
+ bases_on_balls: Walks
+ strikeouts: batter strikeouts
+ batting_average: Batting average
+ OBP: On base percentage
+ SLG: Slugging percentage
+ OPS: On base + slugging percentage
+ total_bases: Total bases
+ GDP: Double plays grounded into
+ HBP: Times hit by pitch
+ sacrifice_hits: Sacrifice hits
+ sacrifice_flies: Sacrifice flies
+ IBB: Intentional bases on balls
+
+
+
